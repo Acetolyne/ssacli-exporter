@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ func (c *batteryCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *batteryCollector) Collect(ch chan<- prometheus.Metric) {
 	statuses, err := getBatteryStatuses()
 	if err != nil {
-		fmt.Println("cache battery collector error:", err)
+		log.Printf("[cache_battery] collector error: %v", err)
 		ch <- prometheus.MustNewConstMetric(c.success, prometheus.GaugeValue, 0, "cache_battery")
 		return
 	}

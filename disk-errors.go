@@ -407,10 +407,15 @@ func buildSnapshot(rows []DriveError) *diskErrorSnapshot {
 		t.errorsLoggedTotal = row.ErrorsLoggedTotal
 		t.critical = t.critical || row.Critical
 
-		if row.Count > 0 {
-			ek := errKey{dk, row.ErrorDesc, row.Critical}
-			errCounts[ek] += row.Count
-		}
+		// Always record an entry, including the zero-count "none" row
+		// ParseADUReport emits for a drive with a clean error log, so a
+		// healthy drive still gets an explicit
+		// hpraid_physical_drive_error_count{...} 0 series instead of no
+		// series at all -- important for queries/alerts that expect
+		// every known drive to have a value rather than being silently
+		// absent.
+		ek := errKey{dk, row.ErrorDesc, row.Critical}
+		errCounts[ek] += row.Count
 	}
 
 	snap := &diskErrorSnapshot{}

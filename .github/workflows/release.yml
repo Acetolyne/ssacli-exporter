@@ -1,0 +1,56 @@
+name: Build and release
+
+# Triggered by pushing a version tag, e.g.:
+#   git tag v1.0.0 && git push origin v1.0.0
+# workflow_dispatch lets you also run it by hand from the Actions tab.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # required to create the GitHub Release and upload assets
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build linux/amd64 binary
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/ssacli-exporter-linux-amd64 .
+
+      - name: Determine prerelease flag
+        id: prerelease
+        run: |
+          if [[ "${{ github.ref_name }}" == *-alpha ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release and upload binary
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ssacli-exporter-linux-amd64
+          generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.value }}

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"testing"
 
 	"gopkg.in/ini.v1"
 
@@ -33,6 +34,17 @@ var Cfg *ini.File
 var Delay int
 
 func init() {
+	// ssacli itself requires root to talk to the Smart Array controllers,
+	// and this exporter also needs to write into the root-owned configDir
+	// (settings.ini, error.log). Fail fast with a clear message instead
+	// of limping along and hitting confusing permission errors later.
+	// Skipped under `go test` (testing.Testing(), Go 1.21+) so the test
+	// suite doesn't require root -- this init() runs in every test binary
+	// for this package too, root or not.
+	if euid := os.Geteuid(); euid != 0 && !testing.Testing() {
+		log.Fatalf("ssacli-exporter must be run as root (uid 0); current effective uid is %d", euid)
+	}
+
 	// configDir must exist before we can open the log file below, whether
 	// or not settings.ini already exists there.
 	if err := os.MkdirAll(configDir, 0755); err != nil {

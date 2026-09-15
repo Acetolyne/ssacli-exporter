@@ -1,3 +1,4 @@
 make program check for root and exit if not root user
 make program install as a service automatically and enable the service
+add GITHUB cicd pipeline
 update grafana dashboards to group by disk_id and instance

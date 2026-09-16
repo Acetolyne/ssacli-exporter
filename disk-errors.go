@@ -327,6 +327,39 @@ func logReportPreview(slot int, data []byte) {
 	log.Printf("[disk_errors] slot %d: report text preview: %q%s", slot, string(preview), suffix)
 }
 
+// logAnchorLineLimit bounds how many matching lines logHeaderAnchorLines
+// will log, so a pathological report can't flood the log file.
+const logAnchorLineLimit = 40
+
+// logHeaderAnchorLines logs every line in data containing either of the
+// two literal phrases driveHeaderRE depends on ("Smart Array" and
+// "Physical Drive"). Unlike logReportPreview (a fixed-size prefix that
+// may not reach far enough into a large report to show a real drive
+// header), this scans the whole text and gives direct, complete
+// visibility into the exact header wording a given system's ssacli
+// produces -- e.g. it's what revealed that an embedded controller writes
+// "Smart Array P440ar in Embedded Slot" instead of "in Slot N".
+func logHeaderAnchorLines(slot int, data []byte) {
+	var matches []string
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(strings.TrimRight(rawLine, "\r"))
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "Smart Array") || strings.Contains(line, "Physical Drive") {
+			matches = append(matches, line)
+			if len(matches) >= logAnchorLineLimit {
+				break
+			}
+		}
+	}
+	if len(matches) == 0 {
+		log.Printf("[disk_errors] slot %d: no lines containing \"Smart Array\" or \"Physical Drive\" found in report", slot)
+		return
+	}
+	log.Printf("[disk_errors] slot %d: header anchor lines found (%d): %s", slot, len(matches), strings.Join(matches, " | "))
+}
+
 // aduReportEntryName is the fixed name ssacli uses, inside the zip it
 // generates, for the actual report text -- regardless of what path was
 // passed via file= on the command line.
@@ -336,11 +369,12 @@ const aduReportEntryName = "ADUReport.txt"
 // is a genuine zip archive (detected by its magic number, not by file
 // extension), the entry named ADUReport.txt is read out and returned.
 // Otherwise raw is assumed to already be plain report text and is
-// returned as-is. Either way, a preview of the final text is logged so a
-// parse that comes back with 0 rows can still be diagnosed.
+// returned as-is. Either way, a preview and the header anchor lines are
+// logged so a parse that comes back with 0 rows can still be diagnosed.
 func extractReportText(slot int, raw []byte) (string, error) {
 	if !bytes.HasPrefix(raw, []byte("PK")) {
 		logReportPreview(slot, raw)
+		logHeaderAnchorLines(slot, raw)
 		return string(raw), nil
 	}
 
@@ -375,6 +409,7 @@ func extractReportText(slot int, raw []byte) (string, error) {
 		return "", fmt.Errorf("reading %s inside zip archive: %w", report.Name, err)
 	}
 	logReportPreview(slot, data)
+	logHeaderAnchorLines(slot, data)
 	return string(data), nil
 }
 
@@ -464,7 +499,7 @@ func (c *diskErrorCollector) refreshOnce(tmpPathBase string) {
 			if err != nil {
 				return err
 			}
-			rows := ParseADUReport(text)
+			rows := ParseADUReport(slot, text)
 			rowCount = len(rows)
 			allRows = append(allRows, rows...)
 			return nil
@@ -554,8 +589,25 @@ var criticalSenseKeys = map[int]bool{
 // "Smart Array P840 in slot 1 : Internal Drive Cage at Port 1I : Box 1 :
 //
 //	Physical Drive (2 TB SATA HDD) 1I:1:11 : Serial SCSI Physical Drive Error Log"
+//
+// Note the header can wrap onto a second line before "Physical Drive"
+// (as in the example above), so the "(?s)" flag is required to make "."
+// match newlines too -- without it, .*? can't bridge that line break and
+// the header simply fails to match at all, silently dropping every
+// drive on any report where it happens to wrap.
+//
+// An embedded controller (no PCIe slot number) has been observed to use
+// "Smart Array P440ar in Embedded Slot" here instead of "in Slot N" --
+// note there's no digit to capture at all in that case, and it doesn't
+// even match the "Slot N (Embedded)" wording ssacli's own `ctrl all show
+// status` output uses for the very same controller. Rather than chase
+// every wording variant, the slot number is no longer captured from this
+// header at all: ParseADUReport takes the authoritative slot number as a
+// parameter (the caller already knows it -- it's the same slot number
+// used to request this exact report via `ssacli ctrl slot=N diag`), and
+// this regex only needs to recognize either phrasing to find the header.
 var driveHeaderRE = regexp.MustCompile(
-	`(?i)Smart Array .*? in slot (?P<slot>\d+).*?` +
+	`(?is)Smart Array .*? in (?:Slot \d+|Embedded Slot).*?` +
 		`Physical Drive \((?P<drivedesc>[^)]+)\)\s+(?P<driveid>[0-9A-Za-z:]+)\s*:\s*` +
 		`Serial SCSI Physical Drive Error Log`,
 )
@@ -627,12 +679,17 @@ func hexPad2(v int) string {
 
 // ParseADUReport parses a full ADU text report and returns one row per
 // (drive, decoded error type) combination, plus a zero-count "none" row
-// for any drive with a clean error log.
-func ParseADUReport(text string) []DriveError {
+// for any drive with a clean error log. slot is the authoritative
+// controller slot number this report was generated for (as passed to
+// `ssacli ctrl slot=N diag ...`) and is used for every row's Slot field
+// directly -- it is not re-derived from the report text, since embedded
+// controllers phrase their slot location differently there (see
+// driveHeaderRE) and sometimes without any digit at all.
+func ParseADUReport(slot int, text string) []DriveError {
 	var results []DriveError
+	slotStr := strconv.Itoa(slot)
 
 	headerMatches := driveHeaderRE.FindAllStringSubmatchIndex(text, -1)
-	slotIdx := driveHeaderRE.SubexpIndex("slot")
 	descIdx := driveHeaderRE.SubexpIndex("drivedesc")
 	idIdx := driveHeaderRE.SubexpIndex("driveid")
 
@@ -646,7 +703,6 @@ func ParseADUReport(text string) []DriveError {
 		}
 		searchRegion := text[start:regionEnd]
 
-		slot := text[hm[2*slotIdx]:hm[2*slotIdx+1]]
 		driveID := text[hm[2*idIdx]:hm[2*idIdx+1]]
 		driveDesc := text[hm[2*descIdx]:hm[2*descIdx+1]]
 
@@ -682,7 +738,7 @@ func ParseADUReport(text string) []DriveError {
 
 		if len(errorCounts) == 0 {
 			results = append(results, DriveError{
-				Slot:              slot,
+				Slot:              slotStr,
 				DriveID:           driveID,
 				DriveDesc:         driveDesc,
 				ErrorsLoggedTotal: errorsLoggedTotal,
@@ -696,7 +752,7 @@ func ParseADUReport(text string) []DriveError {
 
 		for k, count := range errorCounts {
 			results = append(results, DriveError{
-				Slot:              slot,
+				Slot:              slotStr,
 				DriveID:           driveID,
 				DriveDesc:         driveDesc,
 				ErrorsLoggedTotal: errorsLoggedTotal,

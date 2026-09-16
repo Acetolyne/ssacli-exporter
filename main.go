@@ -20,7 +20,7 @@ const (
 
 	defaultConfig = `[general]
 ip = 0.0.0.0
-port = 9290
+port = 9090
 delay_seconds = 60
 
 [collectors]

@@ -27,6 +27,7 @@ delay_seconds = 60
 cache_battery_status = true
 disk_error_status = false
 disk_report_interval_mins = 15
+raid_status = true
 `
 )
 
@@ -79,10 +80,10 @@ func init() {
 	Delay, _ = Cfg.Section("general").Key("delay_seconds").Int()
 }
 
-//@todo register the binary as a service
-//@todo make matching exporter files for windows
-//@todo make update argument that will automatically update the agent from master git branch
-//@todo auto build binaries with github webhooks
+// @todo register the binary as a service
+// @todo make matching exporter files for windows
+// @todo make update argument that will automatically update the agent from master git branch
+// @todo auto build binaries with github webhooks
 func main() {
 
 	//Get the settings from config file
@@ -97,6 +98,10 @@ func main() {
 
 	if enabled, _ := Cfg.Section("collectors").Key("disk_error_status").Bool(); enabled {
 		prometheus.MustRegister(NewDiskErrorCollector(Cfg))
+	}
+
+	if Cfg.Section("collectors").Key("raid_status").MustBool(false) {
+		prometheus.MustRegister(NewRaidStatusCollector())
 	}
 
 	// The Handler function provides a default handler to expose metrics
